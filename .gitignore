@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+target/
+dist/
+.angular/
+.nest/
+
+# Environment
+.env
+.env.*
+!.env.example
+frontend/src/environments/environment.ts
+frontend/src/environments/environment.prod.ts
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Soroban
+.soroban/
+contract-ids.testnet.json
+
+# Temporary
+tmp/
+logs/
+*.log

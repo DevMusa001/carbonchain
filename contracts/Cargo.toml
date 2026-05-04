@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "credit_registry",
+    "retirement",
+    "marketplace",
+    "mrv_oracle",
+]
+
+[workspace.package]
+version = "0.1.0"
+authors = ["CarbonChain Team"]
+edition = "2021"
+publish = false
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = false
+panic = "abort"
+lto = true
+codegen-units = 1
+
+[profile.release-with-logs]
+inherits = "release"
+debug = true
