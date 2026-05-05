@@ -454,37 +454,7 @@ When creating a PR, please include:
 
 ---
 
-## Stellar Wave Contributions
 
-CarbonChain participates in the **Stellar Wave program on Drips**. During each Wave (a 7-day sprint), contributors solve labeled issues and earn Points that translate into real rewards funded by the Stellar Development Foundation.
-
-### How to participate
-
-1. Browse issues labelled `stellar-wave` on this repo
-2. Sign in at [drips.network/wave/stellar](https://drips.network/wave/stellar) with your GitHub account
-3. Complete KYC in Settings → Identity and Payments (required to withdraw rewards)
-4. Apply to work on an issue through the Drips Wave app
-5. Wait for maintainer assignment — usually within 24 hours
-6. Submit a PR within the 7-day Wave window
-7. Earn Points proportional to issue complexity → earn a share of the reward pool
-
-### Issue complexity levels
-
-| Level | Points | Typical scope |
-|---|---|---|
-| Trivial | 100 | Typo fix, small config, minor copy change |
-| Medium | 150 | Standard feature, involved bug fix |
-| High | 200 | Complex feature, refactor, new integration |
-
-### Rules and expectations
-
-- You must understand and be able to explain your submission — contributions generated entirely by LLMs without review are **prohibited** under Drips Wave terms and will be rejected
-- Apply only to issues you have reviewed and are confident you can complete within the Wave window
-- You may hold up to 15 pending applications and be assigned at most 7 issues per organization per Wave
-- Compliments (bonus rewards) are given by maintainers for exceptional work — do not expect them for every contribution
-- Low-quality, copy-paste, or bad-faith submissions will result in disqualification from the program
-
-See [Drips Wave Terms](https://docs.drips.network/wave/terms-and-rules/) for the full rules.
 
 ---
 
