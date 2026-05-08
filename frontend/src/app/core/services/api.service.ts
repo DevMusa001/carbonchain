@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { Observable } from 'rxjs';
-import { CreditMetadata, ProjectProfile } from '../../../../shared';
+import { CreditMetadata, ProjectProfile } from '@shared';
 
 // ---------------------------------------------------------------------------
 // Response types mirroring the NestJS controllers

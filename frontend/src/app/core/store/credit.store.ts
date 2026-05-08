@@ -1,6 +1,6 @@
 import { Injectable, inject, signal, computed } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
-import { CreditMetadata, CreditStatus } from '../../../../../shared';
+import { CreditMetadata, CreditStatus } from '@shared';
 import { ApiService } from '../services/api.service';
 
 export type LoadingState = 'idle' | 'loading' | 'loaded' | 'error';
@@ -81,7 +81,9 @@ export class CreditStore {
       const credit = await firstValueFrom(this.api.getCredit(id));
       this._credits.update((list) => {
         const idx = list.findIndex((c) => c.id === id);
-        return idx >= 0 ? list.with(idx, credit) : [...list, credit];
+        return idx >= 0
+          ? [...list.slice(0, idx), credit, ...list.slice(idx + 1)]
+          : [...list, credit];
       });
       this._loadingState.set('loaded');
     } catch (err) {

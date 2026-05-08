@@ -1,5 +1,6 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, Env, Address, String, BytesN};
+use soroban_sdk::xdr::ToXdr;
 
 pub mod types;
 pub mod errors;
@@ -27,7 +28,7 @@ impl CreditRegistry {
     pub fn submit_credit(env: Env, issuer: Address, project_id: String, vintage_year: u32, methodology: String, geography: String, tonnes: i128, ipfs_hash: String) -> Result<BytesN<32>, CarbonChainError> {
         issuer.require_auth();
 
-        let id = env.crypto().sha256(&project_id.to_xdr(&env));
+        let id: BytesN<32> = env.crypto().sha256(&project_id.clone().to_xdr(&env)).into();
         let metadata = CreditMetadata {
             project_id: project_id.clone(),
             issuer: issuer.clone(),

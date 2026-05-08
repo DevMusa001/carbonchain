@@ -1,6 +1,8 @@
 pub mod types;
 
 use crate::types::RetirementRecord;
+use soroban_sdk::{contract, contractimpl, Env, Address, BytesN, String};
+use soroban_sdk::xdr::ToXdr;
 
 #[contract]
 pub struct Retirement;
@@ -11,8 +13,8 @@ impl Retirement {
         buyer.require_auth();
 
         // TODO: Invoke CCR token contract burn()
-        
-        let retirement_id = env.crypto().sha256(&reason.to_xdr(&env));
+
+        let retirement_id: BytesN<32> = env.crypto().sha256(&reason.clone().to_xdr(&env)).into();
         let record = RetirementRecord {
             credit_id: credit_id.clone(),
             buyer: buyer.clone(),

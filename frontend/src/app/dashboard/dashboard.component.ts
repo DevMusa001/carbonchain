@@ -2,7 +2,7 @@ import { Component, inject, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { CreditStore } from '../core/store/credit.store';
 import { StellarWalletService } from '../core/services/stellar-wallet.service';
-import { CreditStatus } from '../../../../shared';
+import { CreditStatus } from '@shared';
 
 @Component({
   selector: 'app-dashboard',
