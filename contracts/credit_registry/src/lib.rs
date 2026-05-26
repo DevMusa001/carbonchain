@@ -203,6 +203,10 @@ impl CreditRegistry {
     pub fn list_credits_by_project(env: Env, project_id: String) -> Vec<BytesN<32>> {
         get_credits_by_project(&env, &project_id)
     }
+
+    pub fn is_verifier(env: Env, address: Address) -> bool {
+        is_verifier(&env, &address)
+    }
 }
 
 #[cfg(test)]
