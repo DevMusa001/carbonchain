@@ -1,6 +1,12 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, contracttype, contracterror, symbol_short, Env, Address, BytesN, Symbol, Vec, IntoVal};
 
+// ── TTL constants ─────────────────────────────────────────────────────────────
+/// Minimum TTL in ledgers (~1 year at 5s/ledger).
+const MIN_TTL: u32 = 6_307_200;
+/// Threshold below which TTL is extended.
+const TTL_THRESHOLD: u32 = MIN_TTL / 2;
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq)]
@@ -83,11 +89,15 @@ impl Marketplace {
         price_xlm: i128,
         tonnes: i128,
         registry_id: Address,
+        nonce: u64,
     ) -> Result<u64, MarketplaceError> {
         if Self::is_paused(&env) {
             return Err(MarketplaceError::ContractPaused);
         }
         seller.require_auth();
+        if !Self::consume_nonce(&env, &seller, nonce) {
+            return Err(MarketplaceError::InvalidNonce);
+        }
         if price_xlm <= 0 || tonnes <= 0 {
             return Err(MarketplaceError::InvalidPrice);
         }
@@ -113,12 +123,14 @@ impl Marketplace {
         };
 
         env.storage().persistent().set(&DataKey::Offer(offer_id), &offer);
+        env.storage().persistent().extend_ttl(&DataKey::Offer(offer_id), TTL_THRESHOLD, MIN_TTL);
 
         // Index under seller
         let key = DataKey::SellerOffers(seller.clone());
         let mut ids: Vec<u64> = env.storage().persistent().get(&key).unwrap_or_else(|| Vec::new(&env));
         ids.push_back(offer_id);
         env.storage().persistent().set(&key, &ids);
+        env.storage().persistent().extend_ttl(&key, TTL_THRESHOLD, MIN_TTL);
 
         env.events().publish((symbol_short!("offer_new"), seller), offer_id);
         Ok(offer_id)
@@ -133,6 +145,9 @@ impl Marketplace {
             return Err(MarketplaceError::ContractPaused);
         }
         seller.require_auth();
+        if !Self::consume_nonce(&env, &seller, nonce) {
+            return Err(MarketplaceError::InvalidNonce);
+        }
         let mut offer: Offer = env
             .storage()
             .persistent()
@@ -148,6 +163,7 @@ impl Marketplace {
 
         offer.active = false;
         env.storage().persistent().set(&DataKey::Offer(offer_id), &offer);
+        env.storage().persistent().extend_ttl(&DataKey::Offer(offer_id), TTL_THRESHOLD, MIN_TTL);
         env.events().publish((symbol_short!("offer_cxl"), seller), offer_id);
         Ok(())
     }
@@ -197,6 +213,7 @@ impl Marketplace {
     fn next_id(env: &Env) -> u64 {
         let id: u64 = env.storage().persistent().get(&DataKey::OfferCount).unwrap_or(0u64);
         env.storage().persistent().set(&DataKey::OfferCount, &(id + 1));
+        env.storage().persistent().extend_ttl(&DataKey::OfferCount, TTL_THRESHOLD, MIN_TTL);
         id
     }
 
@@ -236,6 +253,7 @@ mod tests {
         registry_client.initialize(&admin, &retirement);
         registry_client.register_verifier(&admin, &verifier);
 
+        let inonce = registry_client.nonce(&issuer);
         let credit_id = registry_client.submit_credit(
             &issuer,
             &String::from_str(env, "PROJ-001"),
@@ -244,8 +262,10 @@ mod tests {
             &String::from_str(env, "NG"),
             &1_000_000,
             &String::from_str(env, "bafybei123"),
+            &inonce,
         );
-        registry_client.approve_and_mint(&verifier, &credit_id);
+        let vnonce = registry_client.nonce(&verifier);
+        registry_client.approve_and_mint(&verifier, &credit_id, &vnonce);
 
         let marketplace_id = env.register(Marketplace, ());
         let client = MarketplaceClient::new(env, &marketplace_id);
@@ -322,7 +342,8 @@ mod tests {
         let (client, seller, _admin, registry_id, credit_id) = setup_with_registry(&env);
         let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id);
         let other = Address::generate(&env);
-        assert!(client.try_cancel_offer(&other, &offer_id).is_err());
+        let ononce = client.nonce(&other);
+        assert!(client.try_cancel_offer(&other, &offer_id, &ononce).is_err());
     }
 
     // ── get_active_offers_by_seller tests ────────────────────────────────────

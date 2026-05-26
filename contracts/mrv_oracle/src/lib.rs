@@ -46,6 +46,11 @@ pub enum OracleError {
 // Maximum MRV history entries retained per project (ring-buffer eviction).
 const MAX_HISTORY: u32 = 100;
 
+/// Minimum TTL in ledgers (~1 year at 5s/ledger).
+const MIN_TTL: u32 = 6_307_200;
+/// Threshold below which TTL is extended.
+const TTL_THRESHOLD: u32 = MIN_TTL / 2;
+
 // ── Contract ─────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -90,6 +95,9 @@ impl MrvOracle {
     /// distinguish the two cases from on-chain events.
     pub fn register_oracle(env: Env, admin: Address, oracle: Address) -> Result<bool, OracleError> {
         Self::require_admin(&env, &admin)?;
+        if !Self::consume_nonce(&env, &admin, nonce) {
+            return Err(OracleError::InvalidNonce);
+        }
         let mut set: Vec<Address> = env
             .storage().instance()
             .get(&DataKey::OracleSet)
@@ -112,6 +120,7 @@ impl MrvOracle {
         oracle: Address,
         project_id: String,
         tonnes: i128,
+        nonce: u64,
     ) -> Result<bool, OracleError> {
         if Self::is_paused(&env) {
             return Err(OracleError::ContractPaused);
@@ -119,6 +128,9 @@ impl MrvOracle {
         oracle.require_auth();
         if !Self::is_oracle(&env, &oracle) {
             return Err(OracleError::Unauthorized);
+        }
+        if !Self::consume_nonce(&env, &oracle, nonce) {
+            return Err(OracleError::InvalidNonce);
         }
 
         let anomaly = Self::detect_anomaly(&env, &project_id, tonnes)?;
@@ -132,6 +144,7 @@ impl MrvOracle {
         };
 
         env.storage().persistent().set(&DataKey::Latest(project_id.clone()), &point);
+        env.storage().persistent().extend_ttl(&DataKey::Latest(project_id.clone()), TTL_THRESHOLD, MIN_TTL);
 
         let hist_key = DataKey::History(project_id.clone());
         let mut history: Vec<MrvDataPoint> = env
@@ -144,6 +157,7 @@ impl MrvOracle {
         }
         history.push_back(point);
         env.storage().persistent().set(&hist_key, &history);
+        env.storage().persistent().extend_ttl(&hist_key, TTL_THRESHOLD, MIN_TTL);
 
         env.events().publish(
             (symbol_short!("mrv_upd"), oracle),
@@ -155,6 +169,29 @@ impl MrvOracle {
 
     pub fn get_latest(env: Env, project_id: String) -> Option<MrvDataPoint> {
         env.storage().persistent().get(&DataKey::Latest(project_id))
+    }
+
+    pub fn get_nonce(env: Env, address: Address) -> u64 {
+        env.storage().persistent().get(&DataKey::Nonce(address)).unwrap_or(0u64)
+    }
+
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), OracleError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), OracleError> {
+        let pending: Address = env.storage().instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(OracleError::NoPendingAdmin)?;
+        if new_admin != pending {
+            return Err(OracleError::Unauthorized);
+        }
+        new_admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Ok(())
     }
 
     pub fn get_history(env: Env, project_id: String) -> Vec<MrvDataPoint> {
@@ -176,6 +213,16 @@ impl MrvOracle {
             return Err(OracleError::Unauthorized);
         }
         Ok(())
+    }
+
+    fn consume_nonce(env: &Env, addr: &Address, expected: u64) -> bool {
+        let current: u64 = env.storage().persistent()
+            .get(&DataKey::Nonce(addr.clone())).unwrap_or(0u64);
+        if current != expected { return false; }
+        let key = DataKey::Nonce(addr.clone());
+        env.storage().persistent().set(&key, &(current + 1));
+        env.storage().persistent().extend_ttl(&key, TTL_THRESHOLD, MIN_TTL);
+        true
     }
 
     fn is_oracle(env: &Env, oracle: &Address) -> bool {
@@ -222,7 +269,8 @@ mod tests {
         let admin = Address::generate(&env);
         let oracle = Address::generate(&env);
         client.initialize(&admin);
-        client.register_oracle(&admin, &oracle);
+        let nonce = client.get_nonce(&admin);
+        client.register_oracle(&admin, &oracle, &nonce);
         (env, client, admin, oracle)
     }
 
@@ -248,7 +296,8 @@ mod tests {
     fn test_update_and_get_latest() {
         let (env, client, _admin, oracle) = setup();
         let proj = String::from_str(&env, "PROJ-001");
-        client.update_mrv_data(&oracle, &proj, &1_000_000);
+        let nonce = client.get_nonce(&oracle);
+        client.update_mrv_data(&oracle, &proj, &1_000_000, &nonce);
         let latest = client.get_latest(&proj).unwrap();
         assert_eq!(latest.tonnes, 1_000_000);
         assert!(!latest.anomaly);
@@ -258,8 +307,10 @@ mod tests {
     fn test_history_accumulates() {
         let (env, client, _admin, oracle) = setup();
         let proj = String::from_str(&env, "PROJ-001");
-        client.update_mrv_data(&oracle, &proj, &1_000_000);
-        client.update_mrv_data(&oracle, &proj, &1_050_000);
+        let nonce = client.get_nonce(&oracle);
+        client.update_mrv_data(&oracle, &proj, &1_000_000, &nonce);
+        let nonce2 = client.get_nonce(&oracle);
+        client.update_mrv_data(&oracle, &proj, &1_050_000, &nonce2);
         assert_eq!(client.get_history(&proj).len(), 2);
     }
 
@@ -267,9 +318,10 @@ mod tests {
     fn test_anomaly_flagged_on_large_deviation() {
         let (env, client, _admin, oracle) = setup();
         let proj = String::from_str(&env, "PROJ-001");
-        client.update_mrv_data(&oracle, &proj, &1_000_000);
-        // 50% jump — should flag anomaly
-        let anomaly = client.update_mrv_data(&oracle, &proj, &1_500_000);
+        let nonce = client.get_nonce(&oracle);
+        client.update_mrv_data(&oracle, &proj, &1_000_000, &nonce);
+        let nonce2 = client.get_nonce(&oracle);
+        let anomaly = client.update_mrv_data(&oracle, &proj, &1_500_000, &nonce2);
         assert!(anomaly);
         assert!(client.get_latest(&proj).unwrap().anomaly);
     }
@@ -278,9 +330,10 @@ mod tests {
     fn test_no_anomaly_on_small_deviation() {
         let (env, client, _admin, oracle) = setup();
         let proj = String::from_str(&env, "PROJ-001");
-        client.update_mrv_data(&oracle, &proj, &1_000_000);
-        // 10% jump — within threshold
-        let anomaly = client.update_mrv_data(&oracle, &proj, &1_100_000);
+        let nonce = client.get_nonce(&oracle);
+        client.update_mrv_data(&oracle, &proj, &1_000_000, &nonce);
+        let nonce2 = client.get_nonce(&oracle);
+        let anomaly = client.update_mrv_data(&oracle, &proj, &1_100_000, &nonce2);
         assert!(!anomaly);
     }
 
@@ -289,20 +342,20 @@ mod tests {
         let (env, client, _admin, _oracle) = setup();
         let proj = String::from_str(&env, "PROJ-001");
         let rogue = Address::generate(&env);
-        assert!(client.try_update_mrv_data(&rogue, &proj, &1_000_000).is_err());
+        let nonce = client.get_nonce(&rogue);
+        assert!(client.try_update_mrv_data(&rogue, &proj, &1_000_000, &nonce).is_err());
     }
 
     #[test]
     fn test_history_cap_evicts_oldest() {
         let (env, client, _admin, oracle) = setup();
         let proj = String::from_str(&env, "PROJ-CAP");
-        // Submit MAX_HISTORY + 1 entries; history should stay at MAX_HISTORY.
         for i in 0..=MAX_HISTORY {
-            client.update_mrv_data(&oracle, &proj, &(i as i128 * 1_000));
+            let nonce = client.get_nonce(&oracle);
+            client.update_mrv_data(&oracle, &proj, &(i as i128 * 1_000), &nonce);
         }
         let history = client.get_history(&proj);
         assert_eq!(history.len(), MAX_HISTORY);
-        // Oldest entry (tonnes=0) should have been evicted; first entry is now tonnes=1_000.
         assert_eq!(history.get(0).unwrap().tonnes, 1_000);
     }
 

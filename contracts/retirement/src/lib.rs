@@ -1,13 +1,26 @@
 #![no_std]
 pub mod types;
 
-use crate::types::{DataKey, RetirementRecord};
+use crate::types::{DataKey, RetirementRecord, MIN_TTL, TTL_THRESHOLD};
 use soroban_sdk::{
     contract, contractimpl, contracterror, symbol_short,
     Address, BytesN, Env, String, Symbol, Vec,
     IntoVal,
 };
 use soroban_sdk::xdr::ToXdr;
+
+fn get_nonce(env: &Env, addr: &Address) -> u64 {
+    env.storage().persistent().get(&DataKey::Nonce(addr.clone())).unwrap_or(0u64)
+}
+
+fn consume_nonce(env: &Env, addr: &Address, expected: u64) -> bool {
+    let current = get_nonce(env, addr);
+    if current != expected { return false; }
+    let key = DataKey::Nonce(addr.clone());
+    env.storage().persistent().set(&key, &(current + 1));
+    env.storage().persistent().extend_ttl(&key, TTL_THRESHOLD, MIN_TTL);
+    true
+}
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -71,11 +84,15 @@ impl Retirement {
         tonnes: i128,
         reason: String,
         registry_id: Address,
+        nonce: u64,
     ) -> Result<BytesN<32>, RetirementError> {
         if Self::is_paused(&env) {
             return Err(RetirementError::ContractPaused);
         }
         buyer.require_auth();
+        if !consume_nonce(&env, &buyer, nonce) {
+            return Err(RetirementError::InvalidNonce);
+        }
 
         if tonnes <= 0 {
             panic!("tonnes must be greater than zero");
@@ -98,6 +115,9 @@ impl Retirement {
         env.storage()
             .persistent()
             .set(&DataKey::Retirement(retirement_id.clone()), &record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Retirement(retirement_id.clone()), TTL_THRESHOLD, MIN_TTL);
 
         // Index under buyer account
         let acct_key = DataKey::AccountRetirements(buyer.clone());
@@ -108,6 +128,7 @@ impl Retirement {
             .unwrap_or_else(|| Vec::new(&env));
         list.push_back(retirement_id.clone());
         env.storage().persistent().set(&acct_key, &list);
+        env.storage().persistent().extend_ttl(&acct_key, TTL_THRESHOLD, MIN_TTL);
 
         // Cross-contract: mark the credit as retired in the registry
         let _: () = env.invoke_contract(
@@ -123,6 +144,35 @@ impl Retirement {
         );
 
         Ok(retirement_id)
+    }
+
+    pub fn get_nonce(env: Env, address: Address) -> u64 {
+        get_nonce(&env, &address)
+    }
+
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), RetirementError> {
+        let stored: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .ok_or(RetirementError::NotInitialized)?;
+        admin.require_auth();
+        if admin != stored {
+            return Err(RetirementError::Unauthorized);
+        }
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), RetirementError> {
+        let pending: Address = env.storage().instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(RetirementError::NoPendingAdmin)?;
+        if new_admin != pending {
+            return Err(RetirementError::Unauthorized);
+        }
+        new_admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Ok(())
     }
 
     pub fn get_retirement(env: Env, retirement_id: BytesN<32>) -> Option<RetirementRecord> {
@@ -202,8 +252,10 @@ mod tests {
         let retirement_admin = Address::generate(env);
 
         registry_client.initialize(&admin, &retirement_id);
-        registry_client.register_verifier(&admin, &verifier);
+        let nonce = registry_client.get_nonce(&admin);
+        registry_client.register_verifier(&admin, &verifier, &nonce);
 
+        let inonce = registry_client.get_nonce(&issuer);
         let credit_id = registry_client.submit_credit(
             &issuer,
             &String::from_str(env, "PROJ-001"),
@@ -212,8 +264,10 @@ mod tests {
             &String::from_str(env, "NG"),
             &1_000_000,
             &String::from_str(env, "bafybei123"),
+            &inonce,
         );
-        registry_client.approve_and_mint(&verifier, &credit_id);
+        let vnonce = registry_client.get_nonce(&verifier);
+        registry_client.approve_and_mint(&verifier, &credit_id, &vnonce);
 
         // Initialise the retirement contract with its own admin
         let retirement_client = RetirementClient::new(env, &retirement_id);
@@ -230,6 +284,7 @@ mod tests {
         let (contract_id, registry_id, credit_id, _) = setup(&env);
         let client = RetirementClient::new(&env, &contract_id);
         let buyer = Address::generate(&env);
+        let nonce = client.get_nonce(&buyer);
 
         let ret_id = client.retire(
             &buyer,
@@ -237,6 +292,7 @@ mod tests {
             &1_000_000,
             &String::from_str(&env, "2024 Scope 3 offset"),
             &registry_id,
+            &nonce,
         );
 
         let record = client.get_retirement(&ret_id).unwrap();
@@ -253,6 +309,7 @@ mod tests {
         let (contract_id, registry_id, credit_id, _) = setup(&env);
         let client = RetirementClient::new(&env, &contract_id);
         let buyer = Address::generate(&env);
+        let nonce = client.get_nonce(&buyer);
 
         let ret_id = client.retire(
             &buyer,
@@ -260,6 +317,7 @@ mod tests {
             &1_000_000,
             &String::from_str(&env, "offset"),
             &registry_id,
+            &nonce,
         );
 
         let ids = client.get_retirements_by_account(&buyer);
@@ -277,6 +335,7 @@ mod tests {
             carbonchain_credit_registry::CreditRegistryClient::new(&env, &registry_id);
         let client = RetirementClient::new(&env, &contract_id);
         let buyer = Address::generate(&env);
+        let nonce = client.get_nonce(&buyer);
 
         client.retire(
             &buyer,
@@ -284,6 +343,7 @@ mod tests {
             &1_000_000,
             &String::from_str(&env, "offset"),
             &registry_id,
+            &nonce,
         );
 
         let credit = registry_client.get_credit(&credit_id);
@@ -302,6 +362,7 @@ mod tests {
         let (contract_id, registry_id, credit_id, _) = setup(&env);
         let client = RetirementClient::new(&env, &contract_id);
         let buyer = Address::generate(&env);
+        let nonce = client.get_nonce(&buyer);
 
         client.retire(
             &buyer,
@@ -309,6 +370,7 @@ mod tests {
             &0,
             &String::from_str(&env, "offset"),
             &registry_id,
+            &nonce,
         );
     }
 
