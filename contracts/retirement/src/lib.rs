@@ -71,10 +71,15 @@ impl Retirement {
 
     /// Retire a carbon credit.
     ///
+    /// - Calls `mark_retired` on the credit registry FIRST to flip the credit status atomically
     /// - Stores an immutable `RetirementRecord`
-    /// - Calls `mark_retired` on the credit registry to flip the credit status
     /// - Indexes the retirement under the buyer's account
     /// - Emits a `retire` event
+    ///
+    /// **Atomicity Guarantee:** The credit status is updated in the registry before the
+    /// retirement record is written. This prevents race conditions where a second retirement
+    /// call could succeed before the first one completes. If `mark_retired` fails, the
+    /// retirement record is never written.
     ///
     /// `registry_id` — the deployed credit_registry contract address.
     pub fn retire(
@@ -104,6 +109,14 @@ impl Retirement {
         preimage.append(&env.ledger().timestamp().to_xdr(&env));
         let retirement_id: BytesN<32> = env.crypto().sha256(&preimage).into();
 
+        // Cross-contract: mark the credit as retired in the registry FIRST
+        // This ensures atomicity - if this fails, the retirement record is never written
+        let _: () = env.invoke_contract(
+            &registry_id,
+            &Symbol::new(&env, "mark_retired"),
+            (credit_id.clone(),).into_val(&env),
+        );
+
         let record = RetirementRecord {
             credit_id: credit_id.clone(),
             buyer: buyer.clone(),
@@ -129,13 +142,6 @@ impl Retirement {
         list.push_back(retirement_id.clone());
         env.storage().persistent().set(&acct_key, &list);
         env.storage().persistent().extend_ttl(&acct_key, TTL_THRESHOLD, MIN_TTL);
-
-        // Cross-contract: mark the credit as retired in the registry
-        let _: () = env.invoke_contract(
-            &registry_id,
-            &Symbol::new(&env, "mark_retired"),
-            (credit_id.clone(),).into_val(&env),
-        );
 
         // Emit retirement event
         env.events().publish(
@@ -429,5 +435,49 @@ mod tests {
         let client = RetirementClient::new(&env, &contract_id);
         let rando = Address::generate(&env);
         assert!(client.try_pause(&rando).is_err());
+    }
+
+    // ── Double-retirement prevention tests ────────────────────────────────────
+
+    #[test]
+    fn test_double_retirement_prevented() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (contract_id, registry_id, credit_id, _) = setup(&env);
+        let registry_client =
+            carbonchain_credit_registry::CreditRegistryClient::new(&env, &registry_id);
+        let client = RetirementClient::new(&env, &contract_id);
+        let buyer = Address::generate(&env);
+        let nonce = client.get_nonce(&buyer);
+
+        // First retirement should succeed
+        let ret_id = client.retire(
+            &buyer,
+            &credit_id,
+            &1_000_000,
+            &String::from_str(&env, "offset"),
+            &registry_id,
+            &nonce,
+        );
+
+        // Verify credit is marked as Retired
+        let credit = registry_client.get_credit(&credit_id);
+        assert_eq!(
+            credit.status,
+            carbonchain_credit_registry::types::CreditStatus::Retired
+        );
+
+        // Second retirement attempt should fail (credit is no longer Active)
+        let nonce2 = client.get_nonce(&buyer);
+        let result = client.try_retire(
+            &buyer,
+            &credit_id,
+            &1_000_000,
+            &String::from_str(&env, "another offset"),
+            &registry_id,
+            &nonce2,
+        );
+        assert!(result.is_err());
     }
 }
