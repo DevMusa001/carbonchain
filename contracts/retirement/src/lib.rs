@@ -1,9 +1,11 @@
 #![no_std]
 pub mod types;
+pub mod errors;
 
 use crate::types::{DataKey, RetirementRecord, MIN_TTL, TTL_THRESHOLD};
+use crate::errors::RetirementError;
 use soroban_sdk::{
-    contract, contractimpl, contracterror, symbol_short,
+    contract, contractimpl, symbol_short,
     Address, BytesN, Env, String, Symbol, Vec,
     IntoVal,
 };
@@ -134,6 +136,14 @@ impl Retirement {
         preimage.append(&env.ledger().timestamp().to_xdr(&env));
         let retirement_id: BytesN<32> = env.crypto().sha256(&preimage).into();
 
+        // Cross-contract: mark the credit as retired in the registry FIRST
+        // This ensures atomicity - if this fails, the retirement record is never written
+        let _: () = env.invoke_contract(
+            &registry_id,
+            &Symbol::new(&env, "mark_retired"),
+            (credit_id.clone(),).into_val(&env),
+        );
+
         let record = RetirementRecord {
             credit_id: credit_id.clone(),
             buyer: buyer.clone(),
@@ -159,13 +169,6 @@ impl Retirement {
         list.push_back(retirement_id.clone());
         env.storage().persistent().set(&acct_key, &list);
         env.storage().persistent().extend_ttl(&acct_key, TTL_THRESHOLD, MIN_TTL);
-
-        // Cross-contract: mark the credit as retired in the registry
-        let _: () = env.invoke_contract(
-            &registry_id,
-            &Symbol::new(&env, "mark_retired"),
-            (credit_id.clone(),).into_val(&env),
-        );
 
         // Emit retirement event
         env.events().publish(
