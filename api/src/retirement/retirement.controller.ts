@@ -6,9 +6,15 @@ import { RetirementRecord } from '../shared';
 export class RetirementController {
   constructor(private readonly retirementService: RetirementService) {}
 
-  /** POST /retirement — retire a credit */
+  /**
+   * POST /retirement
+   * Retire a credit on-chain and generate a PDF certificate pinned to IPFS.
+   * Returns the on-chain retirement ID and the IPFS hash of the certificate.
+   */
   @Post()
-  retire(@Body() dto: RetireDto): Promise<{ retirementId: string }> {
+  retire(
+    @Body() dto: RetireDto,
+  ): Promise<{ retirementId: string; certificateIpfsHash: string }> {
     return this.retirementService.retire(dto);
   }
 

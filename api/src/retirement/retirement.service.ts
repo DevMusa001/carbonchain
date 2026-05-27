@@ -5,6 +5,7 @@ import { StellarService } from '../stellar/stellar.service';
 import { StellarKeypairService } from '../stellar/stellar-keypair.service';
 import { nativeToScVal, scValToNative } from '@stellar/stellar-sdk';
 import { RetirementRecord } from '../shared';
+import { CertificateService } from './certificate.service';
 
 export class RetireDto {
   buyerPublicKey: string;
@@ -23,6 +24,7 @@ export class RetirementService {
     private readonly stellarService: StellarService,
     private readonly keypairService: StellarKeypairService,
     private readonly configService: ConfigService,
+    private readonly certificateService: CertificateService,
   ) {
     this.retirementContractId = this.configService.get<string>(
       'RETIREMENT_CONTRACT_ID',
@@ -34,10 +36,18 @@ export class RetirementService {
     );
   }
 
-  async retire(dto: RetireDto): Promise<{ retirementId: string }> {
+  /**
+   * Retire a carbon credit on-chain, then generate a PDF certificate and
+   * pin it to IPFS via Pinata.  Returns both the on-chain retirement ID and
+   * the IPFS hash of the certificate.
+   */
+  async retire(
+    dto: RetireDto,
+  ): Promise<{ retirementId: string; certificateIpfsHash: string }> {
     this.logger.log(
       `Retiring credit ${dto.creditId} for ${dto.buyerPublicKey}`,
     );
+
     const args = [
       nativeToScVal(dto.buyerPublicKey, { type: 'address' }),
       nativeToScVal(Buffer.from(dto.creditId, 'hex'), { type: 'bytes' }),
@@ -45,6 +55,7 @@ export class RetirementService {
       nativeToScVal(dto.reason, { type: 'string' }),
       nativeToScVal(this.registryContractId, { type: 'address' }),
     ];
+
     const signer = this.keypairService.getAdminKeypair();
     const response = await this.stellarService.invokeContract(
       this.retirementContractId,
@@ -52,6 +63,7 @@ export class RetirementService {
       args,
       signer,
     );
+
     const rv = (response as unknown as Record<string, unknown>).returnValue;
     const retirementId = rv
       ? Buffer.from(
@@ -60,7 +72,18 @@ export class RetirementService {
           ) as Uint8Array,
         ).toString('hex')
       : 'unknown';
-    return { retirementId };
+
+    // Generate and pin the retirement certificate PDF.
+    const certificateIpfsHash = await this.certificateService.generateAndPin({
+      retirementId,
+      creditId: dto.creditId,
+      buyer: dto.buyerPublicKey,
+      tonnes: dto.tonnes,
+      reason: dto.reason,
+      timestamp: Math.floor(Date.now() / 1000),
+    });
+
+    return { retirementId, certificateIpfsHash };
   }
 
   async getRetirement(retirementId: string): Promise<RetirementRecord> {
