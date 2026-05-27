@@ -222,29 +222,27 @@ export class StellarService implements OnModuleInit {
     return this.networkPassphrase;
   }
 
-  async getTransactionHash(transactionId: string): Promise<string | null> {
+  async getContractEvents(
+    contractId: string,
+    startLedger = 0,
+  ): Promise<rpc.Api.EventResponse[]> {
     try {
-      // In a real implementation, this would query Horizon for the transaction
-      // For now, return the transactionId as a placeholder
-      return transactionId;
-    } catch (error: unknown) {
+      const response = await this.sorobanRpcServer.getEvents({
+        filters: [
+          {
+            type: 'contract',
+            contractIds: [contractId],
+          },
+        ],
+        startLedger,
+        limit: 100,
+      });
+      return response.events || [];
+    } catch (error) {
       this.logger.error(
-        `Failed to get transaction hash: ${(error as Error).message}`,
+        `Failed to fetch events for contract ${contractId}: ${(error as Error).message}`,
       );
-      return null;
-    }
-  }
-
-  async getLedgerSequence(transactionId: string): Promise<number | undefined> {
-    try {
-      // In a real implementation, this would query Horizon for the ledger sequence
-      // For now, return undefined as a placeholder
-      return undefined;
-    } catch (error: unknown) {
-      this.logger.error(
-        `Failed to get ledger sequence: ${(error as Error).message}`,
-      );
-      return undefined;
+      return [];
     }
   }
 }
