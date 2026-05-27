@@ -16,7 +16,7 @@ use crate::storage::{
     set_retirement_contract, get_retirement_contract,
     set_paused, is_paused,
 };
-use crate::types::{CreditMetadata, CreditStatus, DataKey};
+use crate::types::{CreditMetadata, CreditStatus, DataKey, ServiceType};
 use crate::events::{
     credit_submitted, credit_minted, verifier_added, verifier_removed,
     contract_paused, contract_unpaused,
@@ -193,6 +193,7 @@ impl CreditRegistry {
         let metadata = CreditMetadata {
             project_id: project_id.clone(),
             issuer: issuer.clone(),
+            owner: issuer.clone(),
             vintage_year,
             methodology,
             geography,
@@ -309,6 +310,98 @@ impl CreditRegistry {
     pub fn is_verifier(env: Env, address: Address) -> bool {
         is_verifier(&env, &address)
     }
+
+    // ── Verifier Services ────────────────────────────────────────────────────
+
+    /// Replace all capabilities for a verifier. This overwrites any existing services.
+    pub fn configure_verifier_services(env: Env, admin: Address, verifier: Address, services: Vec<ServiceType>, nonce: u64) -> Result<(), CarbonChainError> {
+        let stored_admin = get_admin(&env).ok_or(CarbonChainError::NotInitialized)?;
+        admin.require_auth();
+        if admin != stored_admin {
+            return Err(CarbonChainError::Unauthorized);
+        }
+        if !consume_nonce(&env, &admin, nonce) {
+            return Err(CarbonChainError::InvalidNonce);
+        }
+        if !is_verifier(&env, &verifier) {
+            return Err(CarbonChainError::VerifierNotFound);
+        }
+        env.storage().persistent().set(&DataKey::VerifierServices(verifier), &services);
+        Ok(())
+    }
+
+    /// Add a single service to a verifier's capabilities.
+    pub fn add_verifier_service(env: Env, admin: Address, verifier: Address, service: ServiceType, nonce: u64) -> Result<(), CarbonChainError> {
+        let stored_admin = get_admin(&env).ok_or(CarbonChainError::NotInitialized)?;
+        admin.require_auth();
+        if admin != stored_admin {
+            return Err(CarbonChainError::Unauthorized);
+        }
+        if !consume_nonce(&env, &admin, nonce) {
+            return Err(CarbonChainError::InvalidNonce);
+        }
+        if !is_verifier(&env, &verifier) {
+            return Err(CarbonChainError::VerifierNotFound);
+        }
+        
+        let mut services: Vec<ServiceType> = env.storage().persistent()
+            .get(&DataKey::VerifierServices(verifier.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        
+        if !services.contains(&service) {
+            services.push_back(service);
+            env.storage().persistent().set(&DataKey::VerifierServices(verifier), &services);
+        }
+        Ok(())
+    }
+
+    /// Remove a single service from a verifier's capabilities.
+    pub fn remove_verifier_service(env: Env, admin: Address, verifier: Address, service: ServiceType, nonce: u64) -> Result<(), CarbonChainError> {
+        let stored_admin = get_admin(&env).ok_or(CarbonChainError::NotInitialized)?;
+        admin.require_auth();
+        if admin != stored_admin {
+            return Err(CarbonChainError::Unauthorized);
+        }
+        if !consume_nonce(&env, &admin, nonce) {
+            return Err(CarbonChainError::InvalidNonce);
+        }
+        if !is_verifier(&env, &verifier) {
+            return Err(CarbonChainError::VerifierNotFound);
+        }
+        
+        let old_services: Vec<ServiceType> = env.storage().persistent()
+            .get(&DataKey::VerifierServices(verifier.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        
+        let mut new_services: Vec<ServiceType> = Vec::new(&env);
+        for s in old_services.iter() {
+            if s != service {
+                new_services.push_back(s);
+            }
+        }
+        env.storage().persistent().set(&DataKey::VerifierServices(verifier), &new_services);
+        Ok(())
+    }
+
+    pub fn get_verifier_services(env: Env, verifier: Address) -> Vec<ServiceType> {
+        env.storage().persistent()
+            .get(&DataKey::VerifierServices(verifier))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+}
+
+// ── Helper functions ─────────────────────────────────────────────────────────
+
+fn get_nonce(env: &Env, addr: &Address) -> u64 {
+    env.storage().persistent().get(&DataKey::Nonce(addr.clone())).unwrap_or(0u64)
+}
+
+fn consume_nonce(env: &Env, addr: &Address, expected: u64) -> bool {
+    let current = get_nonce(env, addr);
+    if current != expected { return false; }
+    let key = DataKey::Nonce(addr.clone());
+    env.storage().persistent().set(&key, &(current + 1));
+    true
 }
 
 #[cfg(test)]
