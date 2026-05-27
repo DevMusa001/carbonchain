@@ -1,9 +1,11 @@
 #![no_std]
 pub mod types;
+pub mod errors;
 
 use crate::types::{DataKey, RetirementRecord, MIN_TTL, TTL_THRESHOLD};
+use crate::errors::RetirementError;
 use soroban_sdk::{
-    contract, contractimpl, contracterror, symbol_short,
+    contract, contractimpl, symbol_short,
     Address, BytesN, Env, String, Symbol, Vec,
     IntoVal,
 };
@@ -20,17 +22,6 @@ fn consume_nonce(env: &Env, addr: &Address, expected: u64) -> bool {
     env.storage().persistent().set(&key, &(current + 1));
     env.storage().persistent().extend_ttl(&key, TTL_THRESHOLD, MIN_TTL);
     true
-}
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum RetirementError {
-    CreditNotActive    = 110,
-    AlreadyInitialized = 111,
-    NotInitialized     = 112,
-    Unauthorized       = 113,
-    ContractPaused     = 114,
 }
 
 #[contract]
