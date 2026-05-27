@@ -41,6 +41,7 @@ pub enum OracleError {
     AlreadyInitialized = 121,
     Overflow           = 122,
     ContractPaused     = 123,
+    ProjectNotFound    = 124,
 }
 
 // Maximum MRV history entries retained per project (ring-buffer eviction).
@@ -167,8 +168,16 @@ impl MrvOracle {
         Ok(anomaly)
     }
 
-    pub fn get_latest(env: Env, project_id: String) -> Option<MrvDataPoint> {
-        env.storage().persistent().get(&DataKey::Latest(project_id))
+    pub fn get_latest(env: Env, project_id: String) -> Result<Option<MrvDataPoint>, OracleError> {
+        // Check if project exists by looking for any history
+        let has_history = env.storage().persistent().has(&DataKey::History(project_id.clone()));
+        let has_latest = env.storage().persistent().has(&DataKey::Latest(project_id.clone()));
+        
+        if !has_history && !has_latest {
+            return Err(OracleError::ProjectNotFound);
+        }
+        
+        Ok(env.storage().persistent().get(&DataKey::Latest(project_id)))
     }
 
     pub fn get_nonce(env: Env, address: Address) -> u64 {
@@ -298,7 +307,7 @@ mod tests {
         let proj = String::from_str(&env, "PROJ-001");
         let nonce = client.get_nonce(&oracle);
         client.update_mrv_data(&oracle, &proj, &1_000_000, &nonce);
-        let latest = client.get_latest(&proj).unwrap();
+        let latest = client.get_latest(&proj).unwrap().unwrap();
         assert_eq!(latest.tonnes, 1_000_000);
         assert!(!latest.anomaly);
     }
@@ -323,7 +332,7 @@ mod tests {
         let nonce2 = client.get_nonce(&oracle);
         let anomaly = client.update_mrv_data(&oracle, &proj, &1_500_000, &nonce2);
         assert!(anomaly);
-        assert!(client.get_latest(&proj).unwrap().anomaly);
+        assert!(client.get_latest(&proj).unwrap().unwrap().anomaly);
     }
 
     #[test]
@@ -437,5 +446,32 @@ mod tests {
         let (env, client, _, _) = setup();
         let rando = Address::generate(&env);
         assert!(client.try_pause(&rando).is_err());
+    }
+
+    #[test]
+    fn test_get_latest_project_not_found() {
+        let (env, client, _admin, _oracle) = setup();
+        let nonexistent_proj = String::from_str(&env, "NONEXISTENT");
+        let result = client.try_get_latest(&nonexistent_proj);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_latest_no_data_vs_project_not_found() {
+        let (env, client, _admin, oracle) = setup();
+        let proj = String::from_str(&env, "PROJ-001");
+        
+        // Project doesn't exist yet - should return ProjectNotFound
+        let result = client.try_get_latest(&proj);
+        assert!(result.is_err());
+        
+        // Add data then get latest
+        let nonce = client.get_nonce(&oracle);
+        client.update_mrv_data(&oracle, &proj, &1_000_000, &nonce);
+        let latest = client.get_latest(&proj).unwrap();
+        assert!(latest.is_some());
+        
+        // Project exists but no current latest data would still return Some(None)
+        // This case is handled by the storage layer returning None for missing keys
     }
 }
